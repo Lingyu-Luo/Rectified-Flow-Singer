@@ -1,0 +1,24 @@
+# Core dependencies
+torch>=2.0.0
+torchaudio>=2.0.0
+numpy>=1.21.0
+scipy>=1.7.0
+
+# Audio processing
+librosa>=0.9.0
+soundfile>=0.10.0
+pyworld>=0.3.0
+
+# Data handling
+pandas>=1.3.0
+tqdm>=4.62.0
+
+# Configuration
+pyyaml>=6.0
+
+# Optional: for NSF-HiFiGAN vocoder
+lightning>=2.0.0
+
+# Development (optional)
+# matplotlib>=3.4.0
+# tensorboard>=2.6.0

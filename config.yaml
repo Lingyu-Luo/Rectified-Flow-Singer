@@ -1,0 +1,190 @@
+# RFSinger Configuration
+# All hyperparameters for preprocessing, training, and inference
+
+# =============================================================================
+# Experiment Settings
+# =============================================================================
+experiment:
+  name: "opencpop"  # Experiment name, used for checkpoint folder naming
+  seed: 0                 # Random seed for reproducibility
+
+# =============================================================================
+# Data Paths
+# =============================================================================
+data:
+  raw_data_path: "./data/opencpop/wavs"      # Path to raw wav files (single-speaker fallback)
+  csv_path: "./data/opencpop/transcriptions.csv"  # Path to transcription CSV (single-speaker fallback)
+  processed_dir: "./processed_data"            # Output directory for processed data
+  
+  # Multi-speaker / Multi-dataset training
+  # When 'speakers' is defined, it overrides raw_data_path and csv_path.
+  # Each entry maps a speaker name to its wav directory and transcription CSV.
+  speakers:
+    opencpop:
+      raw_data_path: "./data/opencpop/wavs"
+      csv_path: "./data/opencpop/transcriptions.csv"
+    Jinyu:
+      raw_data_path: "./data/Jinyu/wavs"
+      csv_path: "./data/Jinyu/transcriptions.csv"
+    Yujin_Normal:
+      raw_data_path: "./data/Yujin/wavs"
+      csv_path: "./data/Yujin/transcriptions.csv"
+    Yujin_Soft:
+      raw_data_path: "./data/Yujin_Soft/wavs"
+      csv_path: "./data/Yujin_Soft/transcriptions.csv"
+    Yujin_Solid:
+      raw_data_path: "./data/Yujin_Solid/wavs"
+      csv_path: "./data/Yujin_Solid/transcriptions.csv"
+    Yujin_Bright:
+      raw_data_path: "./data/Yujin_Bright/wavs"
+      csv_path: "./data/Yujin_Bright/transcriptions.csv"
+  
+# =============================================================================
+# Audio Processing Parameters
+# =============================================================================
+audio:
+  sample_rate: 44100      # Audio sample rate (Hz)
+  n_fft: 2048             # FFT size
+  hop_length: 512         # Hop length for STFT
+  win_length: 2048        # Window length for STFT
+  n_mels: 128              # Number of mel filterbank channels
+  fmin: 40                # Minimum frequency for mel filterbank
+  fmax: 16000             # Maximum frequency for mel filterbank (matches NSF-HiFiGAN vocoder)
+  
+# =============================================================================
+# F0 (Pitch) Extraction Parameters
+# =============================================================================
+f0:
+  method: "harvest"       # F0 extraction method: "harvest", "rmvpe"
+  use_log_f0: true        # Whether to use log-scale F0
+  f0_floor: 50.0          # Minimum F0 frequency (Hz)
+  f0_ceil: 1100.0         # Maximum F0 frequency (Hz)
+  rmvpe_ckpt: "./ckpts/rmvpe.pt"  # Path to RMVPE model checkpoint
+
+# =============================================================================
+# Model Architecture
+# =============================================================================
+model:
+  # FastSpeech2 Encoder
+  d_model: 512            # Model hidden dimension
+  n_encoder_layers: 8     # Number of transformer encoder layers
+  n_head: 4               # Number of attention heads
+  dropout: 0.1            # Dropout rate for regularization
+  
+  # Speaker Embedding (multi-speaker support)
+  use_speaker_embedding: true    # Enable speaker conditioning
+  speaker_embedding_dim: 256     # Speaker embedding dimension (projected to d_model)
+  
+  # Coarse Mel Decoder (CNN-Transformer-CNN architecture)
+  coarse_n_layers: 4      # Number of transformer layers in coarse decoder
+  coarse_n_head: 2        # Number of attention heads in coarse decoder
+  coarse_conv_channels: 512  # CNN hidden channels in coarse decoder
+  coarse_kernel_size: 5   # CNN kernel size in coarse decoder
+  
+  # Rectified Flow Decoder
+  mel_channels: 128        # Number of mel channels (should match audio.n_mels)
+  flow_hidden: 512        # Flow decoder hidden dimension
+  n_flow_layers: 20       # Number of flow decoder layers
+
+# =============================================================================
+# Training Parameters
+# =============================================================================
+training:
+  # Basic training settings
+  epochs: 500             # Total training epochs
+  batch_size: 32          # Training batch size
+  num_workers: 16          # DataLoader workers
+  
+  # Optimizer settings
+  learning_rate: 1.0e-4   # Initial learning rate
+  weight_decay: 0.01      # AdamW weight decay
+  betas: [0.9, 0.98]      # Adam betas
+  
+  # Learning rate scheduler
+  scheduler: "cosine"     # Scheduler type: "cosine", "step", "none"
+  lr_min_ratio: 0.1       # Minimum LR ratio for cosine scheduler
+  
+  # Gradient settings
+  grad_clip: 1.0          # Gradient clipping max norm
+  
+  # EMA (Exponential Moving Average)
+  use_ema: true           # Enable EMA for model weights
+  ema_decay: 0.9999       # EMA decay rate (higher = slower update)
+  
+  # Loss weights
+  loss_weights:
+    flow: 1.0             # Weight for flow matching loss
+    coarse: 0.2           # Weight for coarse mel-spectrogram loss
+  
+  # Warmup settings
+  warmup_steps: 1000        # Linear warmup steps before cosine decay
+  
+  # AMP (Automatic Mixed Precision)
+  use_amp: true             # Enable mixed precision training (GPU only)
+  
+  # Validation
+  val_ratio: 0.05           # Fraction of data for validation (0 = no validation)
+  val_interval: 5           # Run validation every N epochs
+  
+  # Iterative Rectified Flow (ReFlow)
+  reflow:
+    n_steps: 10             # ODE steps for generating reflow pairs
+    freeze_encoder: true    # Freeze encoder/adaptor during reflow training
+    loss_weights:              # Add reflow-specific loss weights
+      flow: 1.0
+      coarse: 0.0             # Disable coarse loss for reflow
+
+# =============================================================================
+# Data Augmentation
+# =============================================================================
+augmentation:
+  # Offline augmentation (applied during preprocessing to create augmented copies)
+  enabled: false              # Master switch for offline augmentation
+  num_augmented_copies: 2     # Number of augmented copies per original sample
+  
+  # Time stretching: changes tempo without affecting pitch
+  time_stretch:
+    enabled: true
+    min_rate: 0.8             # Minimum stretch rate (0.8 = 20% slower)
+    max_rate: 1.2             # Maximum stretch rate (1.2 = 20% faster)
+  
+  # Pitch shifting: changes pitch without affecting tempo (in semitones)
+  pitch_shift:
+    enabled: true
+    min_semitones: -3         # Minimum shift (negative = lower pitch)
+    max_semitones: 3          # Maximum shift (positive = higher pitch)
+  
+  # Online augmentation (applied on-the-fly during training)
+  online:
+    enabled: false            # Master switch for online augmentation
+    f0_jitter: 0.05           # Random F0 perturbation scale (relative)
+    mel_noise_std: 0.02       # Gaussian noise std added to mel spectrogram
+    time_mask_max_len: 10     # Max length of time masking (frames), 0 to disable
+    freq_mask_max_bins: 8     # Max width of frequency masking (bins), 0 to disable
+
+# =============================================================================
+# Checkpoint & Logging
+# =============================================================================
+checkpoint:
+  output_dir: "./ckpts"           # Base directory for all experiments
+  save_interval: 10               # Save checkpoint every N epochs
+  keep_last_n: 5                  # Keep only last N checkpoints (0 = keep all)
+  save_best: true                 # Save best model based on loss
+  
+logging:
+  log_interval: 100               # Log every N steps
+  use_tensorboard: false          # Enable TensorBoard logging
+  
+# =============================================================================
+# Inference Parameters
+# =============================================================================
+inference:
+  n_steps: 50             # Number of ODE integration steps
+  
+  # Vocoder settings
+  vocoder: "nsf_hifigan"  # Vocoder type: "nsf_hifigan", "pyworld", "griffin_lim", "none"
+  vocoder_config: "./ckpts/nsf_hifigan/config.json"
+  vocoder_ckpt: "./ckpts/nsf_hifigan/model.ckpt"
+  
+  # Output settings
+  output_dir: "./outputs"
