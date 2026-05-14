@@ -12,25 +12,8 @@ import random
 
 from utils.config import load_config, get_hparams_from_config
 
-# --- Default Configuration (used if no config file provided) ---
-DEFAULT_HPARAMS = {
-    "sample_rate": 44100,  # Standard audio sample rate
-    "n_fft": 2048,
-    "hop_length": 512,
-    "win_length": 2048,
-    "n_mels": 128,
-    "fmin": 40,
-    "fmax": 16000,  # Must match vocoder's fmax (NSF-HiFiGAN trained with 16000)
-    "data_path": "./data/Jinyu/wavs",  # Actual wav path
-    "csv_path": "./data/Jinyu/transcriptions.csv",
-    "output_dir": "./processed_data",
-    "use_log_f0": True,
-    "f0_floor": 50.0,
-    "f0_ceil": 1100.0,
-}
-
-# Global HPARAMS variable (will be set by main)
-HPARAMS = DEFAULT_HPARAMS.copy()
+# Populated from config.yaml in main(). All preprocessing functions read from this dict.
+HPARAMS: dict = {}
 
 # ── RMVPE lazy singleton ─────────────────────────────────────────────────────
 _RMVPE_INSTANCE = None
@@ -517,40 +500,36 @@ def preprocess():
 
 def main():
     global HPARAMS
-    
+
     parser = argparse.ArgumentParser(description="Preprocess audio data for RFSinger")
     parser.add_argument('--config', type=str, default="config.yaml",
                         help='Path to configuration YAML file')
     parser.add_argument('--data_path', type=str, default=None,
-                        help='Override path to raw wav files')
+                        help='Override raw_data_path from config')
     parser.add_argument('--csv_path', type=str, default=None,
-                        help='Override path to transcription CSV')
+                        help='Override csv_path from config')
     parser.add_argument('--output_dir', type=str, default=None,
-                        help='Override output directory for processed data')
-    
+                        help='Override processed_dir from config')
+
     args = parser.parse_args()
-    
-    # Load config if provided
-    if args.config:
-        config = load_config(args.config)
-        HPARAMS = get_hparams_from_config(config)
-        print(f"Loaded config from {args.config}")
-    
-    # Apply command-line overrides
+
+    config = load_config(args.config)
+    HPARAMS = get_hparams_from_config(config)
+    print(f"Loaded config from {args.config}")
+
     if args.data_path:
         HPARAMS['data_path'] = args.data_path
     if args.csv_path:
         HPARAMS['csv_path'] = args.csv_path
     if args.output_dir:
         HPARAMS['output_dir'] = args.output_dir
-    
-    # Print configuration
+
     print("\nPreprocessing Configuration:")
     print("-" * 40)
     for key, value in HPARAMS.items():
         print(f"  {key}: {value}")
     print("-" * 40 + "\n")
-    
+
     preprocess()
 
 

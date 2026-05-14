@@ -18,6 +18,7 @@ ckpts/
 data/
 processed_data/
 outputs/
+CLAUDE.md
 
 # Editors
 .vscode/

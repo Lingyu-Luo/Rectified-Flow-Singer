@@ -79,8 +79,8 @@ def interpolate_f0_with_uv(f0_hz: np.ndarray, uv_threshold: float = 50.0) -> Tup
     return f0_interp, uv
 
 
-def extract_synthesis_params(segment: Dict, sample_rate: int = 44100, 
-                            hop_length: int = 256, f0_timestep: float = 0.01) -> Tuple:
+def extract_synthesis_params(segment: Dict, sample_rate: int = 44100,
+                            hop_length: int = 512, f0_timestep: float = 0.01) -> Tuple:
     """
     Extract synthesis parameters from a DS segment.
     
@@ -182,7 +182,7 @@ def extract_synthesis_params(segment: Dict, sample_rate: int = 44100,
 
 
 def synthesize_from_ds_segment(model, phone_map, segment: Dict, device, n_steps: int = 10,
-                               sample_rate: int = 44100, hop_length: int = 256,
+                               sample_rate: int = 44100, hop_length: int = 512,
                                f0_stats: Optional[Tuple[float, float]] = None,
                                speaker_id: Optional[int] = None):
     """
@@ -274,24 +274,22 @@ def main():
                        help='Output path for merged .wav (includes filename)')
     
     # Synthesis arguments
-    parser.add_argument('--n_steps', type=int, default=50,
-                       help='Number of ODE steps')
-    parser.add_argument('--sample_rate', type=int, default=44100,
-                       help='Audio sample rate')
-    parser.add_argument('--hop_length', type=int, default=512,
-                       help='STFT hop length')
-    
+    parser.add_argument('--n_steps', type=int, default=None,
+                       help='Number of ODE steps (default: from config)')
+    parser.add_argument('--sample_rate', type=int, default=None,
+                       help='Audio sample rate (default: from config)')
+    parser.add_argument('--hop_length', type=int, default=None,
+                       help='STFT hop length (default: from config)')
+
     # Vocoder arguments
-    parser.add_argument('--vocoder', type=str, 
+    parser.add_argument('--vocoder', type=str,
                        choices=['griffin_lim', 'pyworld', 'nsf_hifigan', 'none'],
-                       default='nsf_hifigan',
-                       help='Vocoder for mel-to-audio conversion')
-    parser.add_argument('--vocoder_config', type=str, 
-                       default='./ckpts/nsf_hifigan/config.json',
-                       help='Path to NSF-HiFiGAN config.json')
-    parser.add_argument('--vocoder_ckpt', type=str,
-                       default='./ckpts/nsf_hifigan/model.ckpt',
-                       help='Path to NSF-HiFiGAN model checkpoint')
+                       default=None,
+                       help='Vocoder for mel-to-audio conversion (default: from config)')
+    parser.add_argument('--vocoder_config', type=str, default=None,
+                       help='Path to NSF-HiFiGAN config.json (default: from config)')
+    parser.add_argument('--vocoder_ckpt', type=str, default=None,
+                       help='Path to NSF-HiFiGAN model checkpoint (default: from config)')
     
     # Additional options
     parser.add_argument('--save_mel', action='store_true',
@@ -357,18 +355,18 @@ def main():
         default_n_steps = 10
         default_output_dir = './outputs'
         sample_rate = 44100
-        hop_length = 256
-    
-    # Apply overrides
+        hop_length = 512
+
+    # Apply overrides: CLI args take precedence when explicitly provided
     phone_map_path = args.phone_map or default_phone_map
     f0_stats_path = args.f0_stats or default_f0_stats
-    vocoder_type = args.vocoder if args.vocoder != 'nsf_hifigan' else default_vocoder
-    vocoder_config_path = args.vocoder_config if args.vocoder_config != './ckpts/nsf_hifigan/config.json' else default_vocoder_config
-    vocoder_ckpt_path = args.vocoder_ckpt if args.vocoder_ckpt != './ckpts/nsf_hifigan/model.ckpt' else default_vocoder_ckpt
-    n_steps = args.n_steps if args.n_steps != 10 else default_n_steps
-    if args.sample_rate != 44100:
+    vocoder_type = args.vocoder if args.vocoder is not None else default_vocoder
+    vocoder_config_path = args.vocoder_config if args.vocoder_config is not None else default_vocoder_config
+    vocoder_ckpt_path = args.vocoder_ckpt if args.vocoder_ckpt is not None else default_vocoder_ckpt
+    n_steps = args.n_steps if args.n_steps is not None else default_n_steps
+    if args.sample_rate is not None:
         sample_rate = args.sample_rate
-    if args.hop_length != 256:
+    if args.hop_length is not None:
         hop_length = args.hop_length
     
     # Load model

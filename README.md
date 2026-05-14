@@ -1,260 +1,196 @@
 # RFSinger
 
-> **⚠️ Important Notice:** Please be aware that the current integration of the RMVPE F0 extractor is buggy. Additionally, the iterative rectified flow generation is currently experiencing some performance issues.
+> **Notice:** The RMVPE F0 extractor integration has known bugs. The iterative rectified flow (reflow) stage also has performance issues. Prefer `f0.method: harvest` and base flow training when running the pipeline.
 
-A singing voice synthesis (SVS) system based on **Rectified Flow** and **FastSpeech2** architecture. RFSinger combines the efficient encoder-decoder structure of FastSpeech2 with the powerful generative capabilities of flow matching for high-quality mel-spectrogram generation.
+A singing voice synthesis (SVS) system based on **Rectified Flow** and **FastSpeech2** architecture. RFSinger combines the efficient encoder-decoder structure of FastSpeech2 with flow matching for high-quality mel-spectrogram generation.
 
 ## Features
 
 - **FastSpeech2 Encoder**: Transformer-based phoneme encoder with positional encoding
-- **Variance Adaptor**: Duration regulation and pitch conditioning
-- **Rectified Flow Decoder**: Flow matching-based mel-spectrogram generation with ODE sampling
-- **Multiple Vocoders**: Support for NSF-HiFiGAN, PyWorld, and Griffin-Lim
-- **Flexible Inference**: Multiple input modes (direct phonemes, metadata file, sample ID)
+- **Variance Adaptor**: Duration regulation, pitch conditioning with UV gating, and coarse mel decoder
+- **Rectified Flow Decoder**: Flow matching mel-spectrogram generation with ODE sampling
+- **Multi-speaker support**: Speaker embeddings for training on multiple datasets
+- **Multiple vocoders**: NSF-HiFiGAN, PyWorld, and Griffin-Lim
+- **DiffSinger (.ds) inference**: Synthesize from DiffSinger project files
+- **Data augmentation**: Offline time-stretch and pitch-shift augmentation
+- **Training features**: AMP, EMA, cosine LR schedule, gradient clipping, iterative reflow
 
 ## Architecture
 
 ```
-Phonemes → FastSpeech2 Encoder → Variance Adaptor → Rectified Flow Decoder → Mel Spectrogram → Vocoder → Audio
-                                      ↑
-                                 Duration + F0
+Phonemes → FS2Encoder → VarianceAdaptor(LR + Pitch/UV Gate + CoarseMelDecoder)
+                                │                        │
+                          adapted (B,T,D)          coarse_mel (B,T,n_mels)
+                                │                        │
+                                ▼                        │
+                       RectifiedFlowDecoder ─────────────┘
+                                │
+                          mel (B,T,n_mels)  →  Vocoder  →  Audio
+```
+
+The flow decoder uses `coarse_mel` as `x_0` (not Gaussian noise): `x_t = (1-t)*coarse_mel + t*mel_target`. This is why `coarse_loss` is part of the training objective.
+
+## Quick Start
+
+```bash
+pip install -r requirements.txt
+
+# 1. Preprocess
+python preprocess.py --config config.yaml
+
+# 2. Train
+python train.py --config config.yaml
+
+# 3. Inference
+python inference.py --checkpoint ./ckpts/rfsinger --index 0
 ```
 
 ## Configuration
 
-RFSinger uses a centralized `config.yaml` file to control all hyperparameters. This makes it easy to:
-- Reproduce experiments with the same settings
-- Share configurations between training and inference
-- Track experiment parameters alongside checkpoints
+All hyperparameters live in `config.yaml`. Edit it directly — CLI flags only override a small subset. The config is copied into the experiment directory at training start, so inference auto-loads it from the checkpoint folder.
 
-### Checkpoint Organization
+### Key Audio Parameters
 
-Checkpoints are saved in a structured folder hierarchy:
-```
-ckpts/
-└── {experiment_name}/
-    ├── config.yaml              # Copy of training config
-    ├── checkpoint_epoch10.pt
-    ├── checkpoint_epoch20.pt
-    ├── checkpoint_best.pt       # Best model by loss
-    ├── checkpoint_latest.pt     # Most recent
-    └── checkpoint_ema.pt        # EMA model for inference
-```
+| Parameter | Value |
+|-----------|-------|
+| Sample Rate | 44100 Hz |
+| FFT Size | 2048 |
+| Hop Length | 512 |
+| Win Length | 2048 |
+| Mel Bands | 128 |
+| F0 Range | 50–1100 Hz |
 
-### Checkpoint Contents
-
-Each checkpoint contains:
-- `model_state_dict`: Model weights
-- `optimizer_state_dict`: Optimizer state for resuming training
-- `scheduler_state_dict`: Learning rate scheduler state
-- `ema_state_dict`: EMA shadow weights and state
-- `global_step`: Total training steps completed
-- `epoch`: Current epoch number
-- `config`: Full training configuration
+These must match the vocoder's expectations (NSF-HiFiGAN `num_mels`, `fmax`, etc.).
 
 ## Data Preparation
 
 ### Directory Structure
 
 ```
-data/
-└── YourDataset/
-    ├── wavs/
-    │   ├── sample1.wav
-    │   ├── sample2.wav
-    │   └── ...
-    └── transcriptions.csv
+data/<speaker>/
+├── wavs/
+│   ├── sample1.wav
+│   └── ...
+└── transcriptions.csv
 ```
 
 ### CSV Format
-
-The `transcriptions.csv` should have the following columns:
 
 | Column | Description |
 |--------|-------------|
 | `name` | Audio file name (without extension) |
 | `ph_seq` | Space-separated phoneme sequence |
-| `ph_dur` | Space-separated phoneme durations (in seconds) |
+| `ph_dur` | Space-separated phoneme durations (seconds) |
 | `ph_num` | Number of phonemes |
-| `note_seq` | Note sequence (optional) |
+| `note_seq` | Note sequence (optional, used by .ds inference) |
 | `note_dur` | Note durations (optional) |
+
+### Multi-speaker Setup
+
+Add entries under `data.speakers` in `config.yaml`:
+
+```yaml
+data:
+  speakers:
+    speaker_a:
+      raw_data_path: "./data/speaker_a/wavs"
+      csv_path: "./data/speaker_a/transcriptions.csv"
+    speaker_b:
+      raw_data_path: "./data/speaker_b/wavs"
+      csv_path: "./data/speaker_b/transcriptions.csv"
+```
+
+When `speakers` is non-empty, preprocessing writes `speaker_map.json` and `train.txt` gains a speaker ID field. The model enables speaker embeddings automatically when `n_speakers > 1`.
 
 ### Preprocessing
 
 ```bash
-# Using config file
 python preprocess.py --config config.yaml
-
-# Or with command-line overrides
-python preprocess.py --config config.yaml --output_dir ./my_data
 ```
 
-This will:
-1. Extract mel-spectrograms (80-band, log-scale)
-2. Extract F0 using configurable method (`harvest` or `rmvpe`)
-3. Interpolate F0 for unvoiced regions
-4. Build phoneme vocabulary
-5. Save processed data to `./processed_data/`
-
-**F0 extractor configuration (`config.yaml`):**
-```yaml
-f0:
-    method: "harvest"        # "harvest" or "rmvpe"
-    f0_floor: 50.0
-    f0_ceil: 1100.0
-    rmvpe_ckpt: "./ckpts/rmvpe.pt"
-```
-
-- `harvest`: PyWorld Harvest extractor (default)
-- `rmvpe`: neural pitch extractor loaded from `utils/rmvpe`
-
-**Output files:**
-- `{id}_mel.npy` - Mel spectrogram for each sample
-- `{id}_f0.npy` - F0 contour for each sample
-- `phone_map.json` - Phoneme to ID mapping
-- `f0_stats.npy` - F0 mean and std for normalization
-- `train.txt` - Metadata file
+Output in `processed_data/`:
+- `{speaker}/{id}_mel.npy` — Log-mel spectrogram (128-band)
+- `{speaker}/{id}_f0.npy` — Interpolated F0 (log-scale if `use_log_f0: true`)
+- `{speaker}/{id}_uv.npy` — Unvoiced mask (1=unvoiced, 0=voiced)
+- `phone_map.json` — Phoneme → integer ID mapping
+- `speaker_map.json` — Speaker → integer ID (multi-speaker only)
+- `f0_stats.npy` — `[mean, std]` for z-score normalization
+- `train.txt` — `file_id|ph_seq|ph_dur|speaker_id` per line
 
 ## Training
 
 ```bash
-# Basic training with config file
+# Basic
 python train.py --config config.yaml
 
-# With command-line overrides
-python train.py --config config.yaml --exp_name my_experiment --epochs 200
+# With overrides
+python train.py --config config.yaml --exp_name myexp --epochs 200 --batch_size 16
 
-# Resume training from experiment directory
-python train.py --config config.yaml --resume ./ckpts/rfsinger_exp01
+# Resume from experiment directory (auto-loads saved config)
+python train.py --config config.yaml --resume ./ckpts/myexp
 ```
 
-### Training Arguments
+### Iterative Reflow (two-step)
 
-| Argument | Description |
-|----------|-------------|
-| `--config` | Path to configuration YAML file (default: `./config.yaml`) |
-| `--exp_name` | Override experiment name from config |
-| `--epochs` | Override number of epochs |
-| `--batch_size` | Override batch size |
-| `--learning_rate` | Override learning rate |
-| `--resume` | Path to experiment directory to resume from |
+```bash
+# Step 1: Generate reflow targets (writes processed_data/reflow/*_mel.npy)
+python train.py --config config.yaml --reflow
 
-### Configuration Options
+# Step 2: Train on reflow targets (appends '-reflow' to experiment name)
+python train.py --config config.yaml --reflow_train
+```
 
-All hyperparameters can be set in `config.yaml`. Key options include:
+Reflow freezes the encoder and trains only the flow decoder on straightened ODE trajectories.
 
-| Section | Parameter | Default | Description |
-|---------|-----------|---------|-------------|
-| `experiment` | `name` | `rfsinger_exp01` | Experiment name for checkpoint folder |
-| `experiment` | `seed` | 42 | Random seed |
-| `model` | `d_model` | 256 | Model hidden dimension |
-| `model` | `n_encoder_layers` | 4 | Number of transformer encoder layers |
-| `model` | `n_head` | 2 | Number of attention heads |
-| `model` | `flow_hidden` | 256 | Flow decoder hidden dimension |
-| `model` | `n_flow_layers` | 20 | Number of flow decoder layers |
-| `f0` | `method` | `harvest` | F0 extractor: `harvest` or `rmvpe` |
-| `f0` | `rmvpe_ckpt` | `./ckpts/rmvpe.pt` | RMVPE checkpoint path (used when `method=rmvpe`) |
-| `training` | `epochs` | 100 | Training epochs |
-| `training` | `batch_size` | 16 | Batch size |
-| `training` | `learning_rate` | 1e-4 | Learning rate |
-| `training` | `grad_clip` | 1.0 | Gradient clipping |
-| `training` | `use_ema` | true | Enable EMA for model weights |
-| `training` | `ema_decay` | 0.9999 | EMA decay rate |
-| `checkpoint` | `save_interval` | 10 | Save every N epochs |
-| `checkpoint` | `keep_last_n` | 5 | Keep only last N checkpoints |
-| `checkpoint` | `save_best` | true | Save best model |
+### Checkpoint Structure
+
+```
+ckpts/<experiment_name>/
+├── config.yaml              # Snapshot of training config
+├── checkpoint_epoch10.pt
+├── checkpoint_latest.pt
+├── checkpoint_best.pt       # Best validation loss
+└── checkpoint_ema.pt        # EMA weights (preferred for inference)
+```
 
 ## Inference
 
-### Basic Usage
-
 ```bash
-# Using experiment directory (recommended) - automatically loads config
-python inference.py \
-    --checkpoint ./ckpts/rfsinger_exp01 \
-    --index 0
+# From metadata by index
+python inference.py --checkpoint ./ckpts/rfsinger --index 0
 
-# Using specific checkpoint file with config
-python inference.py \
-    --checkpoint ./ckpts/rfsinger_exp01/checkpoints/checkpoint_best.pt \
-    --config ./ckpts/rfsinger_exp01/config.yaml \
-    --index 0
-
-# Using sample ID
-python inference.py \
-    --checkpoint ./ckpts/rfsinger_exp01 \
-    --sample_id "1_slice_0001" \
-    --vocoder nsf_hifigan
+# By sample ID
+python inference.py --checkpoint ./ckpts/rfsinger --sample_id "sample_0001"
 
 # Direct phoneme input
-python inference.py \
-    --checkpoint ./ckpts/rfsinger_exp01 \
+python inference.py --checkpoint ./ckpts/rfsinger \
     --phonemes "sh i zh ong g uo" \
-    --durations "5 10 8 12 6 15" \
-    --output_name "test_output"
+    --durations "5 10 8 12 6 15"
+
+# Choose vocoder and step count
+python inference.py --checkpoint ./ckpts/rfsinger --index 0 \
+    --vocoder pyworld --n_steps 100
 ```
 
-### Inference Arguments
+### DiffSinger (.ds) File Inference
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--checkpoint` | (required) | Path to model checkpoint or experiment directory |
-| `--config` | - | Path to config.yaml (auto-detected from experiment dir) |
-| `--phone_map` | (from config) | Phone map path |
-| `--f0_stats` | (from config) | F0 statistics path |
-| `--index` | - | Select sample by index from meta_file |
-| `--sample_id` | - | Select sample by ID |
-| `--phonemes` | - | Direct phoneme input |
-| `--durations` | - | Direct duration input (frames) |
-| `--use_gt_f0` | - | Use ground truth F0 |
-| `--n_steps` | (from config) | ODE integration steps |
-| `--vocoder` | (from config) | Vocoder: `nsf_hifigan`, `pyworld`, `griffin_lim`, `none` |
-| `--output_dir` | (from config) | Output directory |
+```bash
+python infer_ds.py path/to/song.ds --checkpoint ./ckpts/rfsinger --output out.wav
+
+# Multi-speaker
+python infer_ds.py song.ds --checkpoint ./ckpts/rfsinger --speaker speaker_a
+
+# Save intermediate mel/F0
+python infer_ds.py song.ds --checkpoint ./ckpts/rfsinger --save_mel --save_f0
+```
 
 ### Vocoders
 
-1. **NSF-HiFiGAN** (recommended): Neural source-filter HiFi-GAN for high-quality synthesis
-   - Requires `config.json` and `model.ckpt` in `./ckpts/nsf_hifigan/`
-   
-2. **PyWorld**: Traditional vocoder using WORLD synthesis
-   - Good for debugging, lower quality than neural vocoders
-   
-3. **Griffin-Lim**: Phase reconstruction algorithm
-   - No additional model required, lowest quality
-
-## Model Architecture Details
-
-### FastSpeech2 Encoder
-- Embedding layer for phonemes
-- Sinusoidal positional encoding
-- Multi-layer transformer encoder
-
-### Variance Adaptor
-- **Length Regulator**: Expands encoder output based on phoneme durations
-- **Pitch Predictor**: Conv1D stack predicting F0 contour
-- **Coarse Decoder**: Lightweight network generating initial mel estimate
-
-### Rectified Flow Decoder
-- Sinusoidal time embedding
-- Dilated convolutional residual blocks
-- Gated activation mechanism
-- ODE-based sampling from noise to mel-spectrogram
-
-### Loss Functions
-- **Flow Loss**: MSE between predicted and target velocity fields
-- **Pitch Loss**: MSE between predicted and ground truth F0
-
-## Hyperparameters
-
-### Audio Processing
-| Parameter | Value |
-|-----------|-------|
-| Sample Rate | 44100 Hz |
-| FFT Size | 1024 |
-| Hop Length | 256 |
-| Win Length | 1024 |
-| Mel Bands | 80 |
-| F0 Range | 50-1100 Hz |
+| Vocoder | Quality | Notes |
+|---------|---------|-------|
+| `nsf_hifigan` | Best | Requires `ckpts/nsf_hifigan/{config.json, model.ckpt}` |
+| `pyworld` | Medium | Traditional WORLD synthesis, good for debugging |
+| `griffin_lim` | Low | No extra model needed |
 
 ## License
 
@@ -262,7 +198,7 @@ MIT License
 
 ## Acknowledgments
 
-- FastSpeech2 architecture inspired by [FastSpeech 2](https://arxiv.org/abs/2006.04558)
-- Rectified Flow based on [Flow Matching](https://arxiv.org/abs/2210.02747)
-- NSF-HiFiGAN from [NSF-HiFiGAN](https://github.com/openvpi/SingingVocoders)
-- RMVPE checkpoint from [RMVPE](https://github.com/yxlllc/RMVPE)
+- FastSpeech2: [FastSpeech 2](https://arxiv.org/abs/2006.04558)
+- Rectified Flow: [Flow Matching](https://arxiv.org/abs/2210.02747)
+- NSF-HiFiGAN: [SingingVocoders](https://github.com/openvpi/SingingVocoders)
+- RMVPE: [RMVPE](https://github.com/yxlllc/RMVPE)
