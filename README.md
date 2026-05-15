@@ -1,6 +1,6 @@
 # RFSinger
 
-> **Notice:** The RMVPE F0 extractor integration has known bugs. The iterative rectified flow (reflow) stage also has performance issues. Prefer `f0.method: harvest` and base flow training when running the pipeline.
+> **Notice:** The iterative rectified flow (reflow) stage has known performance issues. Prefer base flow training when running the pipeline.
 
 A singing voice synthesis (SVS) system based on **Rectified Flow** and **FastSpeech2** architecture. RFSinger combines the efficient encoder-decoder structure of FastSpeech2 with flow matching for high-quality mel-spectrogram generation.
 

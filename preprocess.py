@@ -92,21 +92,76 @@ def extract_f0_harvest(wav, target_frames=None):
 
 
 def extract_f0_rmvpe(wav, target_frames=None):
-    """Extract F0 with the RMVPE neural pitch estimator."""
+    """Extract F0 with the RMVPE neural pitch estimator.
+
+    RMVPE always operates at 16 kHz with a 160-sample hop (10 ms per frame),
+    regardless of the input audio's sample rate.  The project's mel uses
+    sample_rate / hop_length seconds per frame (e.g. 44100/512 ≈ 11.6 ms).
+    We resample the F0 contour from RMVPE's time grid to the project's time
+    grid so that frame indices align with the mel spectrogram.
+    """
     rmvpe = _get_rmvpe()
     f0 = rmvpe.infer_from_audio(
         wav.astype(np.float32),
         sample_rate=HPARAMS["sample_rate"],
     )
 
-    # Align to target frames if specified
+    # ── Resample F0 from RMVPE time-base to project time-base ────────────
+    # RMVPE frame period: 160 / 16000 = 0.01 s (10 ms)
+    rmvpe_hop_sec = 160.0 / 16000.0
+    # Project frame period
+    project_hop_sec = HPARAMS["hop_length"] / HPARAMS["sample_rate"]
+
+    # Number of frames the project expects
     if target_frames is not None:
-        if len(f0) > target_frames:
-            f0 = f0[:target_frames]
-        elif len(f0) < target_frames:
-            f0 = np.pad(f0, (0, target_frames - len(f0)), mode='constant', constant_values=0)
-    
-    return f0.astype(np.float64)
+        n_target = target_frames
+    else:
+        n_target = int(np.ceil(len(wav) / HPARAMS["hop_length"]))
+
+    n_rmvpe = len(f0)
+
+    if n_rmvpe == 0:
+        return np.zeros(n_target, dtype=np.float64)
+
+    # Time axes (frame-centre times)
+    times_rmvpe = np.arange(n_rmvpe) * rmvpe_hop_sec
+    times_project = np.arange(n_target) * project_hop_sec
+
+    # Separate voiced (>0) and unvoiced (==0) before interpolation so we
+    # don't smear zeros into the F0 contour.
+    voiced_mask = f0 > 0
+
+    if voiced_mask.sum() >= 2:
+        # Interpolate only voiced values
+        voiced_times = times_rmvpe[voiced_mask]
+        voiced_values = f0[voiced_mask]
+
+        interp_func = interp1d(
+            voiced_times, voiced_values,
+            kind='linear', bounds_error=False,
+            fill_value=(voiced_values[0], voiced_values[-1])
+        )
+        f0_resampled = interp_func(times_project)
+
+        # Rebuild unvoiced mask: a project frame is unvoiced if the nearest
+        # RMVPE frame was unvoiced.
+        nearest_idx = np.clip(
+            np.round(times_project / rmvpe_hop_sec).astype(int),
+            0, n_rmvpe - 1
+        )
+        f0_resampled[~voiced_mask[nearest_idx]] = 0.0
+    elif voiced_mask.sum() == 1:
+        val = float(f0[voiced_mask][0])
+        f0_resampled = np.full(n_target, val, dtype=np.float64)
+        nearest_idx = np.clip(
+            np.round(times_project / rmvpe_hop_sec).astype(int),
+            0, n_rmvpe - 1
+        )
+        f0_resampled[~voiced_mask[nearest_idx]] = 0.0
+    else:
+        f0_resampled = np.zeros(n_target, dtype=np.float64)
+
+    return f0_resampled
 
 
 _F0_EXTRACTORS = {
