@@ -388,7 +388,7 @@ def process_single_utterance(wav, dur_seconds, file_id, output_dir, target_frame
         f0_interp = np.log(f0_interp + 1e-5)
     
     # Save features (supports nested ids like "speaker_name/sample_id")
-    out_prefix = os.path.join(output_dir, file_id)
+    out_prefix = os.path.join(output_dir, str(file_id))
     out_dir = os.path.dirname(out_prefix)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)

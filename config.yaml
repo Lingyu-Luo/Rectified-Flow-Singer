@@ -5,8 +5,8 @@
 # Experiment
 # =============================================================================
 experiment:
-  name: "rfsinger"        # Used as the checkpoint folder name under checkpoint.output_dir
-  seed: 0
+  name: "opencpop-rf"        # Used as the checkpoint folder name under checkpoint.output_dir
+  seed: 42
 
 # =============================================================================
 # Data
@@ -42,7 +42,7 @@ audio:
 # F0 (pitch) extraction
 # =============================================================================
 f0:
-  method: "harvest"       # "harvest" or "rmvpe"
+  method: "rmvpe"       # "harvest" or "rmvpe"
   use_log_f0: true
   f0_floor: 50.0
   f0_ceil: 1100.0
